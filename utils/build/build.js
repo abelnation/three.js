@@ -3,6 +3,41 @@ var path = require("path");
 var argparse =  require( "argparse" );
 var uglify = require("uglify-js");
 var spawn = require('child_process').spawn;
+var concat = require('concat-with-sourcemaps')
+
+var scriptDir = __dirname;
+var baseDir = path.resolve( scriptDir, '../..' );
+var includesDir = path.resolve( scriptDir, 'includes' );
+var externsDir = path.resolve( scriptDir, 'externs' );
+var compilerDir = path.resolve( scriptDir, 'compiler' );
+
+var resultsDir = path.resolve( scriptDir, '../../build' );
+
+function processSourceContent(sourceRelPath) {
+	var sourceAbsPath = path.resolve(baseDir, sourceRelPath);
+	var sourceExtension = path.extname(sourceAbsPath);
+	var sourceFilename = path.basename(sourceRelPath, sourceExtension);
+
+	var content = fs.readFileSync(sourceAbsPath, 'utf8');
+
+	if( sourceExtension === '.glsl' ) {
+
+		content = 'THREE.ShaderChunk[ \'' +
+			sourceFilename + '\' ] =' +
+			JSON.stringify( content ) + ';\n';
+
+	}
+
+	// add file path comment
+	content = '// File: ' + sourceRelPath + '\n\n' + content;
+
+	return {
+		absPath: sourceAbsPath,
+		relPath: sourceRelPath,
+		content: content,
+		ext: sourceExtension
+	};
+}
 
 function main() {
 
@@ -10,73 +45,83 @@ function main() {
 
 	var parser = new argparse.ArgumentParser();
 	parser.addArgument( ['--include'], { action: 'append', required: true } );
-	parser.addArgument( ['--externs'], { action: 'append', defaultValue: ['./externs/common.js'] } );
+	parser.addArgument( ['--externs'], { action: 'append', defaultValue: [ path.resolve( externsDir, 'common.js' ) ] } );
 	parser.addArgument( ['--amd'], { action: 'storeTrue', defaultValue: false } );
 	parser.addArgument( ['--minify'], { action: 'storeTrue', defaultValue: false } );
-	parser.addArgument( ['--output'], { defaultValue: '../../build/three.js' } );
+	parser.addArgument( ['--output'], { defaultValue: path.resolve( resultsDir, 'three.js' ) } );
 	parser.addArgument( ['--sourcemaps'], { action: 'storeTrue', defaultValue: true } );
 
-	
 	var args = parser.parseArgs();
-	
+
 	var output = args.output;
+	var outputDir = path.dirname(output)
+	var outputFilename = path.basename(output)
+
 	console.log(' * Building ' + output);
-	
+
 	var sourcemap = '';
+	var sourcemapFile;
+	var sourcemapPath;
 	var sourcemapping = '';
 
 	if ( args.sourcemaps ){
 
-		sourcemap = output + '.map';
-		sourcemapping = '\n//# sourceMappingURL=three.min.js.map';
+		sourcemapFile = outputFilename + '.map';
+		sourcemapPath = path.resolve(outputDir, sourcemapFile);
+		sourcemapping = '\n//# sourceMappingURL=' + sourcemapFile;
 
 	}
 
-	var buffer = [];
-	var sources = []; // used for source maps with minification
+	var sources = [];
 
-	if ( args.amd ){
-		buffer.push('function ( root, factory ) {\n\n\tif ( typeof define === \'function\' && define.amd ) {\n\n\t\tdefine( [ \'exports\' ], factory );\n\n\t} else if ( typeof exports === \'object\' ) {\n\n\t\tfactory( exports );\n\n\t} else {\n\n\t\tfactory( root );\n\n\t}\n\n}( this, function ( exports ) {\n\n');
-	};
-	
-	for ( var i = 0; i < args.include.length; i ++ ){
-		
-		var contents = fs.readFileSync( './includes/' + args.include[i] + '.json', 'utf8' );
+	if ( args.amd ) {
+
+		sources.push( processSourceContent( 'utils/build/snippets/amd_start.js' ) );
+
+	}
+
+	for ( var i = 0; i < args.include.length; i++ ) {
+
+		var contents = fs.readFileSync( path.resolve( includesDir, args.include[ i ] + '.json' ), 'utf8' );
 		var files = JSON.parse( contents );
 
-		for ( var j = 0; j < files.length; j ++ ){
+		for ( var j = 0; j < files.length; j++ ) {
 
-			var file = '../../' + files[ j ];
-			
-			buffer.push('// File:' + files[ j ]);
-			buffer.push('\n\n');
+			sources.push( processSourceContent( files[ j ] ) );
 
-			contents = fs.readFileSync( file, 'utf8' );
-
-			if( file.indexOf( '.glsl') >= 0 ) {
-
-				contents = 'THREE.ShaderChunk[ \'' +
-					path.basename( file, '.glsl' ) + '\' ] =' +
-					JSON.stringify( contents ) + ';\n';
-
-			}
-
-			sources.push( { file: file, contents: contents } );
-			buffer.push( contents );
-			buffer.push( '\n' );
 		}
 
 	}
-	
-	if ( args.amd ){
-		buffer.push('exports.THREE = THREE;\n\n} ) );');
-	};
-	
-	var temp = buffer.join( '' );
-	
-	if ( !args.minify ){
 
-		fs.writeFileSync( output, temp, 'utf8' );
+	if ( args.amd ) {
+
+		sources.push( processSourceContent( 'utils/build/snippets/amd_end.js' ) );
+
+	}
+
+	if ( ! args.minify ) {
+
+		// build uncompressed file
+		var concatter = new concat( true, output, '\n\n' );
+		for ( var i = 0; i < sources.length; i++ ) {
+
+			// sourcemap paths need to be relative to where build file is
+			concatter.add(
+				path.relative( outputDir, sources[ i ].relPath ),
+				sources[ i ].content );
+
+		}
+
+		var buildSrc = concatter.content;
+
+		if ( args.sourcemaps ) {
+
+			buildSrc += sourcemapping;
+			fs.writeFileSync( sourcemapPath, concatter.sourceMap , 'utf8' );
+
+		}
+
+		fs.writeFileSync( output, buildSrc, 'utf8' );
 
 	} else {
 
@@ -90,8 +135,8 @@ function main() {
 
 		sources.forEach( function( source ) {
 
-			toplevel = uglify.parse( source.contents, {
-				filename: source.file,
+			toplevel = uglify.parse( source.content, {
+				filename: path.relative( outputDir, source.relPath ),
 				toplevel: toplevel
 			} );
 
@@ -112,8 +157,7 @@ function main() {
 		// Output
 
 		var source_map_options = {
-			file: 'three.min.js',
-			root: 'src'
+			file: 'three.min.js'
 		};
 
 		var source_map = uglify.SourceMap( source_map_options )
@@ -125,13 +169,15 @@ function main() {
 		compressed_ast.print( stream );
 		var code = stream.toString();
 
-		fs.writeFileSync( output, code + sourcemapping, 'utf8' );
 
 		if ( args.sourcemaps ) {
 
-			fs.writeFileSync( sourcemap, source_map.toString(), 'utf8' );
+			code += sourcemapping;
+			fs.writeFileSync( sourcemapPath, source_map.toString(), 'utf8' );
 
 		}
+
+		fs.writeFileSync( output, code, 'utf8' );
 
 	}
 
