@@ -72,7 +72,9 @@ function main() {
 
 	}
 
-	var sources = [];
+	var sources = [
+		processSourceContent( 'utils/build/snippets/license.js' )
+	];
 
 	if ( args.amd ) {
 
@@ -125,13 +127,10 @@ function main() {
 
 	} else {
 
-		var LICENSE = "threejs.org/license";
-
+		// see: https://github.com/mishoo/UglifyJS2#the-hard-way
 		// Parsing
 
 		var toplevel = null;
-
-		toplevel = uglify.parse( '// ' + LICENSE + '\n' );
 
 		sources.forEach( function( source ) {
 
@@ -142,38 +141,37 @@ function main() {
 
 		} );
 
+		toplevel.figure_out_scope(); // Necessary before doing any other operations
+
 		// Compression
 
-		toplevel.figure_out_scope();
 		var compressor = uglify.Compressor( {} );
 		var compressed_ast = toplevel.transform( compressor );
 
 		// Mangling
 
-		compressed_ast.figure_out_scope();
+		compressed_ast.figure_out_scope(); // recommended after compression
+
 		compressed_ast.compute_char_frequency();
 		compressed_ast.mangle_names();
 
 		// Output
 
-		var source_map_options = {
-			file: 'three.min.js'
-		};
+		var outputOptions = { comments: new RegExp('threejs\.org\/license') };
+		if ( args.sourcemaps ) {
 
-		var source_map = uglify.SourceMap( source_map_options )
-		var stream = uglify.OutputStream( {
-			source_map: source_map,
-			comments: new RegExp( LICENSE )
-		} );
+			outputOptions.source_map = uglify.SourceMap( { file: outputFilename } );
 
+		}
+
+		var stream = uglify.OutputStream( outputOptions );
 		compressed_ast.print( stream );
 		var code = stream.toString();
-
 
 		if ( args.sourcemaps ) {
 
 			code += sourcemapping;
-			fs.writeFileSync( sourcemapPath, source_map.toString(), 'utf8' );
+			fs.writeFileSync( sourcemapPath, outputOptions.source_map.toString(), 'utf8' );
 
 		}
 
